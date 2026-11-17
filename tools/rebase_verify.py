@@ -1,4 +1,5 @@
 import argparse
+import codecs
 import collections
 import subprocess
 import sys
@@ -43,10 +44,16 @@ def changed_lines(root, base, tip):
                     "--src-prefix=a/", "--dst-prefix=b/", base, tip).split("\n"):
         if line.startswith("diff --git "):
             old_path, new_path, in_hunk = None, None, False
-        elif not in_hunk and line.startswith("--- "):
-            old_path = line[6:] if line.startswith("--- a/") else None
-        elif not in_hunk and line.startswith("+++ "):
-            new_path = line[6:] if line.startswith("+++ b/") else None
+        elif not in_hunk and line.startswith(("--- ", "+++ ")):
+            path = line[4:]
+            if path.startswith('"') and path.endswith('"'):
+                path = codecs.escape_decode(path[1:-1].encode("utf-8"))[0].decode("utf-8", errors="replace")
+            else:
+                path = path.removesuffix("\t")
+            if line.startswith("--- "):
+                old_path = path[2:] if path.startswith("a/") else None
+            else:
+                new_path = path[2:] if path.startswith("b/") else None
         elif line.startswith("@@"):
             in_hunk = True
         elif in_hunk and line.startswith("+") and new_path is not None:

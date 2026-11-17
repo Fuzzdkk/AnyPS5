@@ -102,6 +102,24 @@ class RebaseVerifyTests(unittest.TestCase):
         self.git("config", "diff.relative", "true")
         self.assertEqual(rebase_verify.verify(nested, "old", "new", "main")[3], [])
 
+    def test_changed_lines_preserve_quoted_git_paths(self):
+        blobs = [self.git("rev-parse", f"{ref}:f.txt") for ref in (self.base, "old")]
+        for path in ("ordinary.cpp", "space name.cpp", "trailing space ", 'quote"name.cpp',
+                     "back\\slash.cpp", "tab\tname.cpp", "line\nname.cpp", "界\tname.cpp"):
+            with self.subTest(path=path):
+                trees = []
+                for blob in blobs:
+                    entry = f"100644 blob {blob}\t{path}\0".encode("utf-8")
+                    result = subprocess.run(["git", "-C", str(self.root), "mktree", "-z"],
+                                            input=entry, capture_output=True, check=True)
+                    trees.append(result.stdout.decode("ascii").strip())
+                added, deleted = rebase_verify.changed_lines(self.root, *trees)
+                self.assertEqual(dict(added), {path: {"NEW": 1, "tail": 1}})
+                self.assertEqual(dict(deleted), {})
+                added, deleted = rebase_verify.changed_lines(self.root, *reversed(trees))
+                self.assertEqual(dict(added), {})
+                self.assertEqual(dict(deleted), {path: {"NEW": 1, "tail": 1}})
+
     def test_an_executable_mode_change_must_survive_rebase(self):
         self.git("checkout", "-q", "old")
         self.amend_mode("f.txt", True)
@@ -264,6 +282,18 @@ class RebaseDiffTextTests(unittest.TestCase):
         diff = "diff --git a/f.cpp b/f.cpp\n--- a/f.cpp\n+++ b/f.cpp\n@@ -1 +1 @@\n" + sign + text + "\n"
         with patch.object(rebase_verify, "git", return_value=diff):
             return rebase_verify.changed_lines(Path("."), "base", "head")
+
+    def test_octal_quoted_paths_and_missing_sides_are_decoded(self):
+        from unittest.mock import patch
+        before, after = '"a/caf\\303\\251\\tname.cpp"', '"b/caf\\303\\251\\tname.cpp"'
+        for old, new in ((before, after), ("/dev/null", after), (before, "/dev/null")):
+            with self.subTest(old=old, new=new):
+                diff = f"diff --git {before} {after}\n--- {old}\n+++ {new}\n@@ -1 +1 @@\n"
+                diff += ("-old\n" if old != "/dev/null" else "") + ("+new\n" if new != "/dev/null" else "")
+                with patch.object(rebase_verify, "git", return_value=diff):
+                    added, deleted = rebase_verify.changed_lines(Path("."), "base", "head")
+                self.assertEqual(dict(added), {"café\tname.cpp": {"new": 1}} if new != "/dev/null" else {})
+                self.assertEqual(dict(deleted), {"café\tname.cpp": {"old": 1}} if old != "/dev/null" else {})
 
     def test_unicode_separators_cannot_hide_changed_added_text(self):
         for separator in ("\u0085", "\u2028", "\u2029"):
