@@ -429,6 +429,15 @@ class CleanBuildTests(unittest.TestCase):
 
 
 class BuildPathSafetyTests(unittest.TestCase):
+    def make_alias(self, alias, target):
+        try:
+            alias.symlink_to(target, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) != 1314:
+                raise
+            import _winapi
+            _winapi.CreateJunction(str(target), str(alias))
+
     def make_repo(self, root):
         repo = root / "repo"
         repo.mkdir()
@@ -448,6 +457,62 @@ class BuildPathSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "contains tracked source"):
                 performance_bisect.reset_build_dir(repo, repo / "build")
             self.assertEqual(tracked.read_text(encoding="utf-8"), "tracked source")
+
+    @unittest.skipIf(sys.platform == "win32", "Git pathspec magic requires POSIX filenames")
+    def test_refuses_to_clear_tracked_source_in_a_literal_pathspec_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.make_repo(Path(directory))
+            tracked = repo / ":(exclude)*" / "source.cpp"
+            tracked.parent.mkdir()
+            tracked.write_text("tracked source", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "--literal-pathspecs", "add", "--", ":(exclude)*/source.cpp"], check=True)
+            with patch.object(performance_bisect.shutil, "rmtree") as clear:
+                with self.assertRaisesRegex(ValueError, "contains tracked source"):
+                    performance_bisect.reset_build_dir(repo, tracked.parent)
+                clear.assert_not_called()
+            self.assertEqual(tracked.read_text(encoding="utf-8"), "tracked source")
+
+    def test_refuses_to_clear_tracked_source_through_a_parent_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.make_repo(Path(directory))
+            tracked = repo / "source" / "build" / "source.cpp"
+            tracked.parent.mkdir(parents=True)
+            tracked.write_text("tracked source", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "source/build/source.cpp"], check=True)
+            alias = repo / "alias"
+            self.make_alias(alias, repo / "source")
+            with patch.object(performance_bisect.shutil, "rmtree") as clear:
+                with self.assertRaisesRegex(ValueError, "contains tracked source"):
+                    performance_bisect.reset_build_dir(repo, alias / "build")
+                clear.assert_not_called()
+            self.assertEqual(tracked.read_text(encoding="utf-8"), "tracked source")
+
+    def test_clears_untracked_build_outputs_through_a_parent_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.make_repo(Path(directory))
+            stale = repo / "outputs" / "build" / "stale.txt"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("stale output", encoding="utf-8")
+            alias = repo / "alias"
+            self.make_alias(alias, repo / "outputs")
+            build = alias / "build"
+            self.assertTrue(build.resolve().is_relative_to(repo.resolve()))
+            self.assertNotEqual(build.resolve(), repo.resolve())
+            performance_bisect.reset_build_dir(repo, build)
+            self.assertFalse(stale.exists())
+            self.assertTrue(alias.is_dir())
+
+    def test_refuses_a_parent_alias_that_resolves_to_the_worktree_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = self.make_repo(root)
+            alias = repo / "alias"
+            self.make_alias(alias, root)
+            with patch.object(performance_bisect.shutil, "rmtree") as clear:
+                with self.assertRaisesRegex(ValueError, "worktree root"):
+                    performance_bisect.reset_build_dir(repo, alias / "repo")
+                clear.assert_not_called()
+            self.assertTrue((repo / ".git").is_dir())
 
 
 class BuildSymlinkSafetyTests(unittest.TestCase):
