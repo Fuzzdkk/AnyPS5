@@ -728,6 +728,56 @@ class ExportGapTests(unittest.TestCase):
             self.assertIn("FAIL:", error)
             self.assertIn("would overwrite input", error)
 
+    def test_out_refuses_to_overwrite_default_db(self):
+        first = nid_names.compute_nid("sceExampleAlpha")
+        with tempfile.TemporaryDirectory() as directory:
+            root, prx, tables = tree(directory)
+            write_module(prx, MODULE, {"Export.cpp": "int helper(void) { return 0; }\n"})
+            write_table(tables, MODULE, [first])
+            db = write_db(directory, [(first, "sceExampleAlpha")])
+            before = db.read_bytes()
+            with patch.object(nid_names, "DEFAULT_CACHE", db):
+                code, _, error = run_tool_with_stderr(root, prx, ["--module", MODULE, "--export-table", str(tables), "--out", str(db)])
+            self.assertEqual(code, 2)
+            self.assertIn("would overwrite input", error)
+            self.assertEqual(db.read_bytes(), before)
+
+    def test_out_refuses_hardlink_of_default_db(self):
+        first = nid_names.compute_nid("sceExampleAlpha")
+        with tempfile.TemporaryDirectory() as directory:
+            root, prx, tables = tree(directory)
+            write_module(prx, MODULE, {"Export.cpp": "int helper(void) { return 0; }\n"})
+            write_table(tables, MODULE, [first])
+            db = write_db(directory, [(first, "sceExampleAlpha")])
+            before = db.read_bytes()
+            link = Path(directory) / "alias.csv"
+            try:
+                os.link(db, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("hard links unavailable")
+            with patch.object(nid_names, "DEFAULT_CACHE", db):
+                code, _, error = run_tool_with_stderr(root, prx, ["--module", MODULE, "--export-table", str(tables), "--out", str(link)])
+            self.assertEqual(code, 2)
+            self.assertIn("would overwrite input", error)
+            self.assertEqual(db.read_bytes(), before)
+            self.assertEqual(link.read_bytes(), before)
+
+    def test_explicit_db_allows_output_at_unused_default_cache(self):
+        first = nid_names.compute_nid("sceExampleAlpha")
+        with tempfile.TemporaryDirectory() as directory:
+            root, prx, tables = tree(directory)
+            write_module(prx, MODULE, {"Export.cpp": "int helper(void) { return 0; }\n"})
+            write_table(tables, MODULE, [first])
+            db = write_db(directory, [(first, "sceExampleAlpha")])
+            before = db.read_bytes()
+            cache = Path(directory) / "cache.csv"
+            cache.write_bytes(b"unused database")
+            with patch.object(nid_names, "DEFAULT_CACHE", cache):
+                code, _, error = run_tool_with_stderr(root, prx, ["--module", MODULE, "--export-table", str(tables), "--db", str(db), "--out", str(cache)])
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(db.read_bytes(), before)
+            self.assertEqual(cache.read_text(encoding="utf-8"), first + "\n")
+
     def test_out_refuses_to_overwrite_export_table(self):
         first = nid_names.compute_nid("sceExampleAlpha")
         with tempfile.TemporaryDirectory() as directory:

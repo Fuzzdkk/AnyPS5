@@ -370,17 +370,18 @@ def main(argv=None):
                 raise GapError(f"{module}: invalid module name")
             if not (PRX / module).is_dir():
                 raise GapError(f"{PRX / module}: no such library")
+        db_path = Path(args.db) if args.db else nid_names.DEFAULT_CACHE
         if args.out is not None:
-            sources = [args.nids, args.db]
+            sources = [args.nids, db_path]
             if args.export_table is not None:
                 sources.extend(Path(args.export_table) / (module + ".c") for module in modules)
             for source in filter(None, sources):
                 if same_file(args.out, source):
                     raise GapError(f"output {args.out!r} would overwrite input {source!r}")
         try:
-            db = nid_names.load_db(Path(args.db) if args.db else nid_names.DEFAULT_CACHE)
+            db = nid_names.load_db(db_path)
         except (OSError, UnicodeError) as error:
-            raise GapError(f"{args.db or nid_names.DEFAULT_CACHE}: cannot read NID database: {error}") from error
+            raise GapError(f"{db_path}: cannot read NID database: {error}") from error
         console = load_console_nids(modules, args.export_table, args.nids)
         report = []
         missing_nids = []
